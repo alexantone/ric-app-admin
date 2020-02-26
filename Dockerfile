@@ -1,8 +1,34 @@
 ARG SCHEMA_PATH=schemas
 ARG STAGE_DIR=/tmp/ac-xapp
+#ARG DOCKER_REPO=nexus3.o-ran-sc.org:10004
+ARG DOCKER_REPO=akrainoenea
 
 #==================================================================================
-FROM nexus3.o-ran-sc.org:10004/bldr-ubuntu16-c-go@sha256:c53b2f70bfc47de5af0eb0c4264f894b2a13ca3c954befda0725191826dda201 as ricbuild
+
+FROM buildpack-deps:stretch as mdclog_build
+
+RUN apt-get update && apt-get -q -y install \
+  autoconf \
+  autoconf-archive \
+  automake \
+  libjsoncpp-dev \
+  libtool \
+  pkg-config \
+  rpm \
+  devscripts \
+  debhelper \
+  gawk \
+  build-essential
+
+# Build mdclog from sources
+ARG MDC_VER=0.0.4-aarch64
+RUN git clone "https://github.com/alexantone/oran-mdclog.git" -b ${MDC_VER} mdclog \
+    && cd mdclog \
+    && ./autogen.sh && ./configure && make test \
+    && ./package.sh --skip-config --skip-test debian
+
+
+FROM ${DOCKER_REPO}/bldr-ubuntu16-c-go:3-u16.04-nng as ricbuild
 
 # to override repo base, pass in repo argument when running docker build:
 # docker build --build-arg REPOBASE=http://abc.def.org . ....
@@ -31,23 +57,24 @@ RUN apt-get update  \
      libffi-dev \
      && apt-get clean
 
-# Install mdclog using debian package hosted at packagecloud.io
-ARG MDC_VER=0.0.3-1
-RUN wget -nv --content-disposition https://packagecloud.io/o-ran-sc/master/packages/debian/stretch/mdclog_${MDC_VER}_amd64.deb/download.deb
-RUN wget -nv --content-disposition https://packagecloud.io/o-ran-sc/master/packages/debian/stretch/mdclog-dev_${MDC_VER}_amd64.deb/download.deb
-RUN dpkg -i mdclog_${MDC_VER}_amd64.deb
-RUN dpkg -i mdclog-dev_${MDC_VER}_amd64.deb
+# Install mdclog using debian packages built previously
+COPY --from=mdclog_build /tmp/mdclog*.deb ${STAGE_DIR}/
+RUN dpkg -i ${STAGE_DIR}/mdclog_*.deb
+RUN dpkg -i ${STAGE_DIR}/mdclog-dev_*.deb
 
-# Install RMr using debian package hosted at packagecloud.io
-ARG RMR_VER=1.12.1
-RUN wget -nv --content-disposition https://packagecloud.io/o-ran-sc/staging/packages/debian/stretch/rmr_${RMR_VER}_amd64.deb/download.deb
-RUN wget -nv --content-disposition https://packagecloud.io/o-ran-sc/staging/packages/debian/stretch/rmr-dev_${RMR_VER}_amd64.deb/download.deb
-RUN dpkg -i rmr_${RMR_VER}_amd64.deb
-RUN dpkg -i rmr-dev_${RMR_VER}_amd64.deb
+# Install RMr from sources
+ARG RMR_VER=1.13.0
+RUN git clone https://gerrit.o-ran-sc.org/r/ric-plt/lib/rmr -b ${RMR_VER} \
+    && mkdir -p rmr/build \
+    && cd rmr/build \
+    && ( cmake -DDEV_PKG=1 .. && make package && make install && ldconfig ) \
+    && ( cmake -DDEV_PKG=0 .. && make package && make install && ldconfig ) \
+    && cp *.deb ${STAGE_DIR}/ \
+    && cd ${STAGE_DIR} \
+    && rm -rf rmr
 
 
 ## Install rapidjson
-    #git checkout tags/v1.1.0 && \
 RUN git clone https://github.com/Tencent/rapidjson && \
     cd rapidjson && \
     mkdir build && \
